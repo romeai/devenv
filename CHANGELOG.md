@@ -37,7 +37,7 @@
 
 ### Improvements
 
-- Sped up `devenv shell` when running nested full-screen TUIs (e.g. neovim, claude-code), where rendering previously lagged on larger terminals. Each frame now reads and redraws only the rows that actually changed instead of the whole screen, so a single-line update no longer costs a full-screen repaint.
+- Sped up `devenv shell` when running nested full-screen TUIs (e.g. neovim, claude-code), where rendering previously lagged on larger terminals. Full-screen apps now have their output forwarded straight to the terminal (with the status line row kept protected) instead of being re-rendered frame by frame, and outside of full-screen apps each frame redraws only the rows that actually changed.
 - Cachix now authenticates pulls and pushes without `CACHIX_AUTH_TOKEN` exported in the environment: when the variable is unset, devenv resolves the token from a `CACHIX_AUTH_TOKEN` secretspec secret, then from the auth token stored by the Cachix CLI (`cachix authtoken`) in `~/.config/cachix/cachix.dhall`. The resolved token is passed to the cachix push daemon as well. The secretspec secret name is configurable via `secretspec.cachix_auth_token` in `devenv.yaml` for backends whose policy (e.g. an OpenBao/Vault policy) only grants access to the token under a different name.
 - Added `devenv tasks list --json` for machine-readable task graph inspection ([#2966](https://github.com/cachix/devenv/issues/2966)).
 - `devenv repl` now exposes `inputs` alongside `devenv` and `pkgs`, so you can inspect inputs declared in `devenv.yaml` directly from the REPL (e.g. `inputs.nixpkgs.lib.version`).
