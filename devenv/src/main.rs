@@ -66,7 +66,7 @@ fn main_inner() -> Result<()> {
                 return Ok(());
             }
             Commands::Allow => {
-                return commands::hook::allow(cli.from.as_deref());
+                return commands::hook::allow(cli.from.as_deref(), &cli.shell_args.profiles);
             }
             Commands::Revoke => {
                 return commands::hook::revoke();
@@ -252,7 +252,7 @@ fn enter_discovered_project_root() -> Result<()> {
         commands::hook::trusted_from(&cwd)
             .ok()
             .flatten()
-            .map(|(bound_dir, _)| PathBuf::from(bound_dir))
+            .map(|binding| PathBuf::from(binding.path))
     });
     let Some(root) = root.filter(|r| r.as_path() != cwd) else {
         return Ok(());
@@ -261,7 +261,7 @@ fn enter_discovered_project_root() -> Result<()> {
 }
 
 /// Resolve CLI + config files + environment into UI and backend options.
-fn resolve(cli: Cli, shutdown: Arc<Shutdown>) -> Result<(UiOptions, BackendOptions)> {
+fn resolve(mut cli: Cli, shutdown: Arc<Shutdown>) -> Result<(UiOptions, BackendOptions)> {
     let command = cli.command;
 
     // Source priority: explicit `--from` / `-O` overrides > a local devenv.nix
@@ -280,10 +280,15 @@ fn resolve(cli: Cli, shutdown: Arc<Shutdown>) -> Result<(UiOptions, BackendOptio
         // entered as the project root below, matching hook activation, so its
         // devenv.yaml, .devenv state, and processes are shared by all subdirs.
         if project_root.is_none()
-            && let Some((bound_dir, from)) = commands::hook::trusted_from(cwd)?
+            && let Some(binding) = commands::hook::trusted_from(cwd)?
         {
-            project_root = Some(PathBuf::from(bound_dir));
-            from_source = Some(from);
+            project_root = Some(PathBuf::from(binding.path));
+            from_source = Some(binding.from);
+            // Bound profiles apply as if passed via --profile; explicit
+            // --profile flags win.
+            if cli.shell_args.profiles.is_empty() {
+                cli.shell_args.profiles = binding.profiles;
+            }
         }
     }
 
