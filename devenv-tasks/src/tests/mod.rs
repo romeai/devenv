@@ -5,7 +5,6 @@ use crate::types::{Skipped, TaskCompleted, TaskStatus, VerbosityLevel};
 
 use pretty_assertions::assert_matches;
 use serde_json::json;
-use sqlx::Row;
 use std::fs::Permissions;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -590,8 +589,8 @@ echo "Task executed"
 }
 
 #[tokio::test]
-async fn test_refresh_task_cache_with_exec_if_modified() -> Result<(), Error> {
-    // When refresh_task_cache is set, tasks with exec_if_modified should
+async fn test_refresh_task_cache() -> Result<(), Error> {
+    // When refresh_task_cache is set, tasks with cache inputs should
     // re-execute even when the watched files haven't changed.
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks.db");
@@ -617,7 +616,7 @@ echo "Task executed"
         "tasks": [{
             "name": task_name,
             "command": command,
-            "exec_if_modified": [test_file_path]
+            "cache": {"inputs": [{"path": test_file_path}]}
         }]
     }))
     .unwrap();
@@ -640,7 +639,7 @@ echo "Task executed"
         "tasks": [{
             "name": task_name,
             "command": command,
-            "exec_if_modified": [test_file_path]
+            "cache": {"inputs": [{"path": test_file_path}]}
         }]
     }))
     .unwrap();
@@ -663,7 +662,7 @@ echo "Task executed"
         "tasks": [{
             "name": task_name,
             "command": command,
-            "exec_if_modified": [test_file_path]
+            "cache": {"inputs": [{"path": test_file_path}]}
         }]
     }))
     .unwrap();
@@ -684,7 +683,7 @@ echo "Task executed"
 }
 
 #[tokio::test]
-async fn test_exec_if_modified() -> Result<(), Error> {
+async fn test_cache_input_changes() -> Result<(), Error> {
     // Create a unique tempdir for this test
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks.db");
@@ -722,7 +721,7 @@ echo "Task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": [test_file_path]
+                "cache": {"inputs": [{"path": test_file_path}]}
             }
         ]
     }))
@@ -770,7 +769,7 @@ echo "Task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": [test_file_path]
+                "cache": {"inputs": [{"path": test_file_path}]}
             }
         ]
     }))
@@ -825,7 +824,7 @@ echo "Task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": [test_file_path]
+                "cache": {"inputs": [{"path": test_file_path}]}
             }
         ]
     }))
@@ -866,7 +865,7 @@ echo "Task executed successfully"
 }
 
 #[tokio::test]
-async fn test_exec_if_modified_multiple_files() -> Result<(), Error> {
+async fn test_cache_multiple_inputs() -> Result<(), Error> {
     // Create a unique temp directory specifically for this test's database
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks.db");
@@ -904,13 +903,13 @@ echo "Multiple files task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": [test_file_path1, test_file_path2]
+                "cache": {"inputs": [{"path": test_file_path1}, {"path": test_file_path2}]}
             }
         ]
     }))
     .unwrap();
 
-    // Create tasks with multiple files in exec_if_modified
+    // Create tasks with multiple files in cache inputs
     let tasks = Tasks::builder(config1, VerbosityLevel::Verbose, Shutdown::new())
         .with_db_path(db_path.clone())
         .build()
@@ -943,7 +942,7 @@ echo "Multiple files task executed successfully"
             {
                 "name": task_name.clone(),
                 "command": command,
-                "exec_if_modified": [test_file_path1, test_file_path2]
+                "cache": {"inputs": [{"path": test_file_path1}, {"path": test_file_path2}]}
             }
         ]
     }))
@@ -975,7 +974,7 @@ echo "Multiple files task executed successfully"
             {
                 "name": task_name.clone(),
                 "command": command,
-                "exec_if_modified": [test_file_path1, test_file_path2]
+                "cache": {"inputs": [{"path": test_file_path1}, {"path": test_file_path2}]}
             }
         ]
     }))
@@ -1009,7 +1008,7 @@ echo "Multiple files task executed successfully"
             {
                 "name": task_name.clone(),
                 "command": command,
-                "exec_if_modified": [test_file_path1, test_file_path2]
+                "cache": {"inputs": [{"path": test_file_path1}, {"path": test_file_path2}]}
             }
         ]
     }))
@@ -1049,7 +1048,7 @@ echo "Multiple files task executed successfully"
             {
                 "name": task_name.clone(),
                 "command": command,
-                "exec_if_modified": [test_file_path1, test_file_path2]
+                "cache": {"inputs": [{"path": test_file_path1}, {"path": test_file_path2}]}
             }
         ]
     }))
@@ -1122,7 +1121,7 @@ echo "Task executed successfully"
                 {
                     "name": task_name,
                     "command": command,
-                    "exec_if_modified": [test_file_path]
+                    "cache": {"inputs": [{"path": test_file_path}]}
                 }
             ]
         }))
@@ -1168,7 +1167,7 @@ echo "Task executed successfully"
                 {
                     "name": task_name,
                     "command": command,
-                    "exec_if_modified": [test_file_path]
+                    "cache": {"inputs": [{"path": test_file_path}]}
                 }
             ]
         }))
@@ -1235,7 +1234,7 @@ echo "Task executed successfully"
                 {
                     "name": task_name,
                     "command": command,
-                    "exec_if_modified": [test_file_path]
+                    "cache": {"inputs": [{"path": test_file_path}]}
                 }
             ]
         }))
@@ -1285,7 +1284,7 @@ echo "Task executed successfully"
 }
 
 #[tokio::test]
-async fn test_file_state_updated_after_task() -> Result<(), Error> {
+async fn test_input_change_during_task_is_rejected() -> Result<(), Error> {
     // Create a unique tempdir for this test
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks-update-after.db");
@@ -1325,20 +1324,11 @@ echo "Task completed and modified the file"
             {
                 "name": task_name,
                 "command": modify_script.to_str().unwrap(),
-                "exec_if_modified": [file_path_str]
+                "cache": {"inputs": [{"path": file_path_str}]}
             }
         ]
     }))
     .unwrap();
-
-    // Connect to the database directly to check hash values
-    let cache = crate::task_cache::TaskCache::with_db_path(db_path.clone()).await?;
-
-    // Get the initial hash of the file
-    let initial_hash = {
-        let tracked_file = devenv_cache_core::file::TrackedFile::new(&test_file_path)?;
-        tracked_file.content_hash.clone()
-    };
 
     // Create and run the tasks
     let tasks = Tasks::builder(config, VerbosityLevel::Verbose, Shutdown::new())
@@ -1346,6 +1336,18 @@ echo "Task completed and modified the file"
         .build()
         .await?;
     tasks.run(false).await;
+
+    let first_status = &tasks.graph[tasks.tasks_order[0]].read().await.status;
+    match first_status {
+        TaskStatus::Completed(TaskCompleted::Failed(_, failure)) => assert!(
+            failure
+                .error
+                .contains("inputs changed while the task was running"),
+            "unexpected cache contract error: {}",
+            failure.error
+        ),
+        other => panic!("Expected cache contract failure, got: {other:?}"),
+    }
 
     // Check the modified file content
     let modified_content = fs::read_to_string(&test_file_path).await?;
@@ -1355,36 +1357,8 @@ echo "Task completed and modified the file"
         "File should be modified by the task"
     );
 
-    // Calculate the new hash after task ran
-    let current_hash = {
-        let tracked_file = devenv_cache_core::file::TrackedFile::new(&test_file_path)?;
-        tracked_file.content_hash.clone()
-    };
-
-    // Verify the hashes are different
-    assert_ne!(
-        initial_hash, current_hash,
-        "File content hash should change after task modifies it"
-    );
-
-    // Fetch the stored file info from the database
-    let file_info = cache.fetch_file_info(&task_name, &file_path_str).await?;
-
-    // Verify the database has the updated hash
-    assert!(
-        file_info.is_some(),
-        "File info should be stored in database"
-    );
-    if let Some(row) = file_info {
-        let stored_hash: Option<String> = row.get("content_hash");
-        assert_eq!(
-            stored_hash.unwrap_or_default(),
-            current_hash.clone().unwrap_or_default(),
-            "Database should have the updated hash after task execution"
-        );
-    }
-
-    // Run the task again - it should be skipped since no files changed
+    // On the next run the command writes the same contents, so the input is
+    // stable for the full execution and the result can be committed.
     let config2 = Config::try_from(json!({
         "roots": [task_name],
         "run_mode": "all",
@@ -1392,7 +1366,7 @@ echo "Task completed and modified the file"
             {
                 "name": task_name,
                 "command": modify_script.to_str().unwrap(),
-                "exec_if_modified": [file_path_str]
+                "cache": {"inputs": [{"path": file_path_str}]}
             }
         ]
     }))
@@ -1404,17 +1378,11 @@ echo "Task completed and modified the file"
         .await?;
     tasks2.run(false).await;
 
-    // Check that the task was skipped
+    // The prior failed run did not publish a cache entry.
     let status = &tasks2.graph[tasks2.tasks_order[0]].read().await.status;
     match status {
-        TaskStatus::Completed(TaskCompleted::Skipped(_)) => {
-            // Expected case - task was skipped because file wasn't modified
-            println!("Task was correctly skipped on second run");
-        }
-        other => {
-            println!("Warning: Task not skipped as expected, got: {other:?}");
-            // We're relaxing this assertion for CI stability
-        }
+        TaskStatus::Completed(TaskCompleted::Success(..)) => {}
+        other => panic!("Expected successful second run, got: {other:?}"),
     }
 
     Ok(())
@@ -1458,14 +1426,11 @@ exit 1
             {
                 "name": task_name,
                 "command": fail_script.to_str().unwrap(),
-                "exec_if_modified": [file_path_str]
+                "cache": {"inputs": [{"path": file_path_str}]}
             }
         ]
     }))
     .unwrap();
-
-    // Connect to the database directly to check hash values
-    let cache = crate::task_cache::TaskCache::with_db_path(db_path.clone()).await?;
 
     // Create and run the tasks - first run
     let tasks = Tasks::builder(config.clone(), VerbosityLevel::Verbose, Shutdown::new())
@@ -1485,13 +1450,10 @@ exit 1
         }
     }
 
-    // Fetch the stored file info from the database
-    let file_info = cache.fetch_file_info(&task_name, &file_path_str).await?;
-
-    // Verify the database does NOT have the file info for failed tasks
+    let cache = crate::task_cache::TaskCache::with_db_path(db_path.clone()).await?;
     assert!(
-        file_info.is_none(),
-        "File info should NOT be stored in database for failed tasks"
+        cache.get_cached_run(&task_name).await?.is_none(),
+        "Failed tasks must not publish cache entries"
     );
 
     // Run the task again - it should run again (not be cached) since it failed
@@ -1552,7 +1514,7 @@ exit 1
         "tasks": [{
             "name": task_name,
             "command": fail_script.to_str().unwrap(),
-            "exec_if_modified": [file_path_str]
+            "cache": {"inputs": [{"path": file_path_str}]}
         }]
     }))
     .unwrap();
@@ -1581,7 +1543,7 @@ exit 0
         "tasks": [{
             "name": task_name,
             "command": success_script.to_str().unwrap(),
-            "exec_if_modified": [file_path_str]
+            "cache": {"inputs": [{"path": file_path_str}]}
         }]
     }))
     .unwrap();
@@ -3162,11 +3124,129 @@ async fn inspect_tasks(tasks: &Tasks) -> Vec<(String, TaskStatus)> {
     result
 }
 
+#[tokio::test]
+async fn test_cache_output_drift_forces_rerun() -> Result<(), Error> {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("tasks.db");
+    let input = temp_dir.path().join("input");
+    let output = temp_dir.path().join("output");
+    let counter = temp_dir.path().join("counter");
+    fs::write(&input, "input").await?;
+    let script = create_script(&format!(
+        "#!/bin/sh\ncount=$(cat '{}' 2>/dev/null || echo 0)\ncount=$((count + 1))\necho $count > '{}'\necho generated-$count > '{}'",
+        counter.display(),
+        counter.display(),
+        output.display()
+    ))?;
+    let config = || {
+        Config::try_from(json!({
+            "roots": ["cache:output-drift"],
+            "run_mode": "all",
+            "tasks": [{
+                "name": "cache:output-drift",
+                "command": script.to_str().unwrap(),
+                "cache": {
+                    "inputs": [{"path": input.to_str().unwrap()}],
+                    "outputs": [{"path": output.to_str().unwrap()}]
+                }
+            }]
+        }))
+        .unwrap()
+    };
+
+    for expected in ["1", "1"] {
+        let tasks = Tasks::builder(config(), VerbosityLevel::Quiet, Shutdown::new())
+            .with_db_path(db_path.clone())
+            .build()
+            .await?;
+        tasks.run(false).await;
+        assert_eq!(fs::read_to_string(&counter).await?.trim(), expected);
+    }
+
+    fs::write(&output, "drifted").await?;
+    let tasks = Tasks::builder(config(), VerbosityLevel::Quiet, Shutdown::new())
+        .with_db_path(db_path)
+        .build()
+        .await?;
+    tasks.run(false).await;
+    assert_eq!(fs::read_to_string(&counter).await?.trim(), "2");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cache_missing_required_output_fails() -> Result<(), Error> {
+    let temp_dir = TempDir::new().unwrap();
+    let script = create_script("#!/bin/sh\ntrue")?;
+    let missing = temp_dir.path().join("missing-output");
+    let config = Config::try_from(json!({
+        "roots": ["cache:missing-output"],
+        "run_mode": "all",
+        "tasks": [{
+            "name": "cache:missing-output",
+            "command": script.to_str().unwrap(),
+            "cache": {"outputs": [{"path": missing.to_str().unwrap()}]}
+        }]
+    }))
+    .unwrap();
+    let tasks = Tasks::builder(config, VerbosityLevel::Quiet, Shutdown::new())
+        .with_db_path(temp_dir.path().join("tasks.db"))
+        .build()
+        .await?;
+    tasks.run(false).await;
+
+    match &tasks.graph[tasks.tasks_order[0]].read().await.status {
+        TaskStatus::Completed(TaskCompleted::Failed(_, failure)) => assert!(
+            failure.error.contains("required cache outputs are missing"),
+            "unexpected failure: {}",
+            failure.error
+        ),
+        other => panic!("Expected missing-output failure, got: {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_cache_lock_deduplicates_concurrent_runs() -> Result<(), Error> {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("tasks.db");
+    let output = temp_dir.path().join("output");
+    let counter = temp_dir.path().join("counter");
+    let script = create_script(&format!(
+        "#!/bin/sh\nsleep 0.2\necho run >> '{}'\necho output > '{}'",
+        counter.display(),
+        output.display()
+    ))?;
+    let config = || {
+        Config::try_from(json!({
+            "roots": ["cache:concurrent"],
+            "run_mode": "all",
+            "tasks": [{
+                "name": "cache:concurrent",
+                "command": script.to_str().unwrap(),
+                "cache": {"outputs": [{"path": output.to_str().unwrap()}]}
+            }]
+        }))
+        .unwrap()
+    };
+    let first = Tasks::builder(config(), VerbosityLevel::Quiet, Shutdown::new())
+        .with_db_path(db_path.clone())
+        .build()
+        .await?;
+    let second = Tasks::builder(config(), VerbosityLevel::Quiet, Shutdown::new())
+        .with_db_path(db_path)
+        .build()
+        .await?;
+
+    tokio::join!(first.run(false), second.run(false));
+    assert_eq!(fs::read_to_string(counter).await?.lines().count(), 1);
+    Ok(())
+}
+
 /// Test that changing the command path (simulating a Nix rebuild) invalidates the cache
-/// even when exec_if_modified files haven't changed.
+/// even when cache inputs files haven't changed.
 /// This tests the fix for https://github.com/cachix/devenv/issues/1924
 #[tokio::test]
-async fn test_exec_if_modified_command_change() -> Result<(), Error> {
+async fn test_cache_command_change() -> Result<(), Error> {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks.db");
 
@@ -3199,7 +3279,7 @@ echo "Command v1 executed"
         "tasks": [{
             "name": task_name,
             "command": command1,
-            "exec_if_modified": [watched_file_path]
+            "cache": {"inputs": [{"path": watched_file_path}]}
         }]
     }))
     .unwrap();
@@ -3222,7 +3302,7 @@ echo "Command v1 executed"
         "tasks": [{
             "name": task_name,
             "command": command1,
-            "exec_if_modified": [watched_file_path]
+            "cache": {"inputs": [{"path": watched_file_path}]}
         }]
     }))
     .unwrap();
@@ -3254,7 +3334,7 @@ echo "Command v2 executed"
         "tasks": [{
             "name": task_name,
             "command": command2,
-            "exec_if_modified": [watched_file_path]
+            "cache": {"inputs": [{"path": watched_file_path}]}
         }]
     }))
     .unwrap();
@@ -3284,10 +3364,10 @@ echo "Command v2 executed"
     Ok(())
 }
 
-/// Test that command path changes invalidate cache even when exec_if_modified contains
+/// Test that command path changes invalidate cache even when cache inputs contains
 /// negation patterns that would otherwise match shell scripts.
 #[tokio::test]
-async fn test_exec_if_modified_command_change_with_negation() -> Result<(), Error> {
+async fn test_cache_command_change_with_declared_input() -> Result<(), Error> {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks.db");
 
@@ -3324,7 +3404,7 @@ echo '{"version": 2}' > $DEVENV_TASK_OUTPUT_FILE
             "tasks": [{
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": [watched_file_path, "!**/*.sh"]
+                "cache": {"inputs": [{"path": watched_file_path}]}
             }]
         }))
         .unwrap()
@@ -4637,7 +4717,7 @@ mod property_tests {
 }
 
 #[tokio::test]
-async fn test_exec_if_modified_dotfiles() -> Result<(), Error> {
+async fn test_cache_dotfiles() -> Result<(), Error> {
     // Create a unique tempdir for this test
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("tasks.db");
@@ -4678,7 +4758,7 @@ echo "Dotfiles task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": ["**/*"]
+                "cache": {"inputs": [{"path": "**/*"}]}
             }
         ]
     }))
@@ -4725,7 +4805,7 @@ echo "Dotfiles task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": ["**/*"]
+                "cache": {"inputs": [{"path": "**/*"}]}
             }
         ]
     }))
@@ -4779,7 +4859,7 @@ echo "Dotfiles task executed successfully"
             {
                 "name": task_name,
                 "command": command,
-                "exec_if_modified": ["**/*"]
+                "cache": {"inputs": [{"path": "**/*"}]}
             }
         ]
     }))

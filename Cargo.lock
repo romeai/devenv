@@ -2186,6 +2186,7 @@ dependencies = [
  "devenv-cache-core",
  "devenv-core",
  "devenv-processes",
+ "fd-lock",
  "ignore",
  "miette",
  "nix 0.31.3",

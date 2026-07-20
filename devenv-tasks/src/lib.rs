@@ -8,7 +8,7 @@ mod tasks;
 mod types;
 pub mod ui;
 
-pub use config::{Config, RunMode, TaskConfig};
+pub use config::{CachePath, Config, RunMode, TaskCacheConfig, TaskConfig};
 pub use error::Error;
 pub use executor::{ExecutionContext, ExecutionResult, OutputCallback};
 pub use privileges::SudoContext;

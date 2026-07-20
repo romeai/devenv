@@ -4,7 +4,27 @@ use crate::types::{DependencyKind, DependencySpec, TaskType};
 use devenv_processes::ProcessConfig;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CachePath {
+    pub path: String,
+    #[serde(default)]
+    pub optional: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskCacheConfig {
+    #[serde(default)]
+    pub inputs: Vec<CachePath>,
+    #[serde(default)]
+    pub outputs: Vec<CachePath>,
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskConfig {
     pub name: String,
     #[serde(default)]
@@ -20,7 +40,7 @@ pub struct TaskConfig {
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
-    pub exec_if_modified: Vec<String>,
+    pub cache: Option<TaskCacheConfig>,
     #[serde(default)]
     pub input: Option<serde_json::Value>,
     #[serde(default)]
@@ -222,5 +242,19 @@ mod tests {
         let spec = parse_dependency("devenv:processes:postgres@completed").unwrap();
         assert_eq!(spec.name, "devenv:processes:postgres");
         assert_eq!(spec.kind, Some(DependencyKind::Completed));
+    }
+
+    #[test]
+    fn legacy_exec_if_modified_is_rejected() {
+        let error = serde_json::from_value::<TaskConfig>(serde_json::json!({
+            "name": "test:cache",
+            "exec_if_modified": ["src"]
+        }))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `exec_if_modified`")
+        );
     }
 }

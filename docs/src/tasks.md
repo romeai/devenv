@@ -187,9 +187,11 @@ If you define a `status` command, it will be executed first and if it returns `0
 
 Tasks using the `status` attribute will also cache their outputs. When a task is skipped because its status command returns success, the output from the most recent successful run will be restored and passed to dependent tasks.
 
-## Executing tasks only when files have been modified
+## Caching task results
 
-You can specify a list of files to monitor with `execIfModified`. The task will only run if any of these files have been modified since the last successful run. This attribute supports glob patterns, allowing you to monitor multiple files matching specific patterns.
+Use a cache contract to skip a task only when its definition, inputs, inherited
+environment, dependency outputs, and previously produced outputs still match the
+last successful run. Paths may be literal files, directories, or glob patterns.
 
 ```nix title="devenv.nix"
 { pkgs, lib, config, ... }:
@@ -198,12 +200,15 @@ You can specify a list of files to monitor with `execIfModified`. The task will 
   tasks = {
     "myapp:build" = {
       exec = "npm run build";
-      execIfModified = [
-        "src/**/*.ts"  # All TypeScript files in src directory
-        "*.json"       # All JSON files in the current directory
-        "package.json" # Specific file
-        "src"          # Entire directory
+      cache.inputs = [
+        { path = "src/**/*.ts"; }
+        { path = "*.json"; optional = true; }
+        { path = "package.json"; }
       ];
+      cache.outputs = [
+        { path = "dist"; }
+      ];
+      cache.env = [ "NODE_ENV" ];
       # Optionally run the build in a specific directory
       cwd = "./frontend";
     };
@@ -211,11 +216,18 @@ You can specify a list of files to monitor with `execIfModified`. The task will 
 }
 ```
 
-This is particularly useful for tasks that depend on specific files and don't need to run if those files haven't changed.
+Paths are required unless `optional = true`. A successful command that does not
+produce all required outputs fails its cache contract. Inputs are snapshotted
+before and after execution; if they change while the command is running, the run
+fails instead of publishing a possibly inconsistent result. Symlink targets and
+directory contents are hashed without following directory symlinks.
 
-The system tracks both file modification times and content hashes to detect actual changes. If a file's timestamp changes but its content remains the same (which can happen when touching a file or when saving without making changes), the task will be skipped.
-
-When a task is skipped due to no file changes, any previous outputs from that task are preserved and passed to dependent tasks, making the caching more efficient.
+The task command, status command, JSON input, task environment, working directory,
+cache declaration, selected inherited environment variables, shell identity, and
+dependency outputs are part of the definition fingerprint. A `status` command can
+be combined with a cache contract; both the content cache and status probe must be
+valid for the task to be skipped. Cached JSON outputs are restored for dependent
+tasks on a hit.
 
 ## Inputs / Outputs
 

@@ -652,6 +652,25 @@ impl Tasks {
             .collect()
     }
 
+    /// Collect every transitive prerequisite of a task. Task commands receive
+    /// only these outputs, so their data dependencies match their DAG edges.
+    fn collect_ancestor_indices(&self, index: NodeIndex) -> HashSet<NodeIndex> {
+        let mut ancestors = HashSet::new();
+        let mut pending: Vec<_> = self
+            .graph
+            .neighbors_directed(index, petgraph::Direction::Incoming)
+            .collect();
+        while let Some(candidate) = pending.pop() {
+            if ancestors.insert(candidate) {
+                pending.extend(
+                    self.graph
+                        .neighbors_directed(candidate, petgraph::Direction::Incoming),
+                );
+            }
+        }
+        ancestors
+    }
+
     /// Wait for task dependencies to be satisfied in the background.
     /// Returns `(cancelled, dependency_failed)`.
     async fn wait_for_task_deps(
@@ -1008,6 +1027,11 @@ impl Tasks {
             // Oneshot task: spawn into background with dependency checking,
             // so independent tasks can run in parallel.
             let deps = self.collect_deps(*index);
+            let mut dependency_names = HashSet::new();
+            for dependency_index in self.collect_ancestor_indices(*index) {
+                dependency_names
+                    .insert(self.graph[dependency_index].read().await.task.name.clone());
+            }
 
             // TODO: consider Arc-ing self at this point
             let task_state_clone = Arc::clone(task_state);
@@ -1058,7 +1082,14 @@ impl Tasks {
                     // Notify UI that task is starting
                     notify_ui_clone.notify_one();
                     let completed = {
-                        let outputs = outputs_clone.lock().await.clone();
+                        let all_outputs = outputs_clone.lock().await.clone();
+                        let outputs = Outputs(
+                            all_outputs
+                                .0
+                                .into_iter()
+                                .filter(|(name, _)| dependency_names.contains(name))
+                                .collect(),
+                        );
                         match task_state_clone
                             .read()
                             .await
@@ -1097,8 +1128,13 @@ impl Tasks {
                                     // TODO: remove clone
                                     .insert(task_state.task.name.clone(), output.clone());
 
-                                // Store the task output for all tasks to support future reuse
-                                if let Some(output_value) = output.as_object() {
+                                // Cache-v2 tasks commit their output atomically with
+                                // snapshots inside TaskState. The legacy task_run row is
+                                // retained only for status-only tasks.
+                                if task_state.task.cache.is_none()
+                                    && task_state.task.status.is_some()
+                                    && let Some(output_value) = output.as_object()
+                                {
                                     let task_name = &task_state.task.name;
                                     if let Err(e) = cache
                                         .store_task_output(
@@ -1121,27 +1157,6 @@ impl Tasks {
                                     .await
                                     // TODO: fix clone
                                     .insert(task_state.task.name.clone(), output.clone());
-
-                                // Store task output if we're having status or exec_if_modified
-                                if (task_state.task.status.is_some()
-                                    || !task_state.task.exec_if_modified.is_empty())
-                                    && let Some(output_value) = output.as_object()
-                                {
-                                    let task_name = &task_state.task.name;
-                                    if let Err(e) = cache
-                                        .store_task_output(
-                                            task_name,
-                                            &serde_json::Value::Object(output_value.clone()),
-                                        )
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            "Failed to store task output for {}: {}",
-                                            task_name,
-                                            e
-                                        );
-                                    }
-                                }
                             }
                             _ => {}
                         }

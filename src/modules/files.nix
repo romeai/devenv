@@ -109,8 +109,10 @@ let
       echo "${filename}" >> "$DEVENV_FILES_CREATED"
     elif [ -f "${filename}" ]; then
       echo "Conflicting file ${filename}" >&2
+      exit 1
     elif [ -e "${filename}" ]; then
       echo "Conflicting non-file ${filename}" >&2
+      exit 1
     else
       echo "Creating ${filename}"
       mkdir -p "${dirOf filename}"
@@ -187,10 +189,6 @@ let
       fi
     done
 
-    ${optionalString (config.files == {}) ''
-      # No files configured, save empty state
-      echo '{"managedFiles":[]}' > '${filesStateFile}'
-    ''}
   '';
 
   saveStateScript = ''
@@ -212,21 +210,18 @@ in
   };
 
   config = {
-    tasks."devenv:files:cleanup" = {
-      description = "Cleanup orphaned files";
-      exec = cleanupScript;
-      before = [ "devenv:files" "devenv:enterShell" ];
-    };
-
-    tasks."devenv:files" = optionalAttrs (config.files != { }) {
-      description = "Create files";
+    tasks."devenv:files" = {
+      description = "Reconcile managed files";
       exec = ''
         export DEVENV_FILES_CREATED=$(mktemp)
+        ${cleanupScript}
         ${concatStringsSep "\n\n" (mapAttrsToList createFileScript config.files)}
         ${saveStateScript}
       '';
-      after = [ "devenv:files:cleanup" ];
       before = [ "devenv:enterShell" ];
+      cache.outputs = [
+        { path = filesStateFile; }
+      ] ++ mapAttrsToList (name: _: { path = "${config.devenv.root}/${name}"; }) config.files;
     };
 
     infoSections = optionalAttrs (config.files != { }) {
