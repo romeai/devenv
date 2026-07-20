@@ -1,13 +1,14 @@
 use crate::SudoContext;
 use crate::config::TaskConfig;
 use crate::executor::{ExecutionContext, OutputCallback};
-use crate::task_cache::{TaskCache, find_files_matching_patterns};
+use crate::task_cache::{PathState, TaskCache, snapshot_executable};
 use crate::types::{
     Output, Outputs, Skipped, TaskCompleted, TaskFailure, TaskStatus, VerbosityLevel,
     get_or_create_devenv_env_mut, process_name,
 };
 use base64::Engine;
 use devenv_activity::{Activity, ActivityInstrument, ActivityLevel};
+use devenv_cache_core::file::compute_string_hash;
 use devenv_processes::{NativeProcessManager, ProcessConfig};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use std::collections::BTreeMap;
@@ -130,74 +131,85 @@ impl TaskState {
         }
     }
 
-    /// Check if any files specified in exec_if_modified have been modified.
-    #[tracing::instrument(
-        name = "exec_if_modified",
-        skip(self, cache),
-        fields(
-            task.name = %self.task.name,
-            task.cached,
-            exec_if_modified.pattern_count,
-            exec_if_modified.include_pattern_count,
-            exec_if_modified.exclude_pattern_count,
-            exec_if_modified.matched_file_count,
-        )
-    )]
-    async fn check_files_modified(
+    fn cache_definition_hash(
         &self,
-        cache: &TaskCache,
-    ) -> Result<bool, devenv_cache_core::error::CacheError> {
-        if self.task.exec_if_modified.is_empty() {
-            return Ok(false);
+        dependency_outputs: &Outputs,
+        shell_env: &std::collections::HashMap<String, String>,
+    ) -> Result<String> {
+        #[derive(serde::Serialize)]
+        struct Definition<'a> {
+            schema: u8,
+            command: &'a Option<String>,
+            command_snapshot: Option<PathState>,
+            status: &'a Option<String>,
+            status_snapshot: Option<PathState>,
+            input: &'a Option<serde_json::Value>,
+            task_env: BTreeMap<&'a str, &'a str>,
+            cwd: String,
+            cache: &'a crate::config::TaskCacheConfig,
+            inherited_env: BTreeMap<&'a str, Option<&'a str>>,
+            shell_identity: BTreeMap<&'static str, Option<&'a str>>,
+            dependency_outputs: &'a Outputs,
         }
 
-        let patterns = &self.task.exec_if_modified;
-        let include_count = patterns.iter().filter(|p| !p.starts_with('!')).count();
-        let exclude_count = patterns.len() - include_count;
-
-        let span = tracing::Span::current();
-        span.record("exec_if_modified.pattern_count", patterns.len());
-        span.record("exec_if_modified.include_pattern_count", include_count);
-        span.record("exec_if_modified.exclude_pattern_count", exclude_count);
-
-        // Walk the filesystem once and reuse the result for both the
-        // modification check and the removed-files check below.
-        let mut matched_files = find_files_matching_patterns(patterns);
-
-        span.record("exec_if_modified.matched_file_count", matched_files.len());
-
-        let patterns_modified = cache
-            .check_paths_modified(&self.task.name, &matched_files)
-            .await?;
-        if patterns_modified {
-            span.record("task.cached", false);
-            return Ok(true);
-        }
-
-        // Track command path changes separately so negation patterns in exec_if_modified
-        // don't suppress cache invalidation for the task script itself.
-        if let Some(cmd) = &self.task.command {
-            let cmd_modified = cache
-                .check_modified_files(&self.task.name, std::slice::from_ref(cmd))
-                .await?;
-            if cmd_modified {
-                span.record("task.cached", false);
-                return Ok(true);
-            }
-        }
-
-        // Check for files previously tracked in the DB that no longer match the globs
-        // (deleted, renamed, or moved outside the pattern). Build the full set of
-        // currently expected paths so we don't false-positive on command paths.
-        if let Some(cmd) = &self.task.command {
-            matched_files.push(cmd.clone());
-        }
-        let removed = cache
-            .has_removed_files(&self.task.name, &matched_files)
-            .await?;
-
-        span.record("task.cached", !removed);
-        Ok(removed)
+        let cache = self
+            .task
+            .cache
+            .as_ref()
+            .expect("cache definition requested only for cached tasks");
+        let task_env = self
+            .task
+            .env
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let inherited_env = cache
+            .env
+            .iter()
+            .map(|key| (key.as_str(), shell_env.get(key).map(String::as_str)))
+            .collect();
+        let shell_identity = ["DEVENV_ROOT", "DEVENV_DOTFILE", "DEVENV_PROFILE"]
+            .into_iter()
+            .map(|key| (key, shell_env.get(key).map(String::as_str)))
+            .collect();
+        let cwd = match &self.task.cwd {
+            Some(cwd) => cwd.clone(),
+            None => std::env::current_dir()
+                .into_diagnostic()
+                .wrap_err("Failed to resolve task working directory")?
+                .to_string_lossy()
+                .into_owned(),
+        };
+        let definition = Definition {
+            schema: 2,
+            command: &self.task.command,
+            command_snapshot: self
+                .task
+                .command
+                .as_deref()
+                .map(snapshot_executable)
+                .transpose()?
+                .flatten(),
+            status: &self.task.status,
+            status_snapshot: self
+                .task
+                .status
+                .as_deref()
+                .map(snapshot_executable)
+                .transpose()?
+                .flatten(),
+            input: &self.task.input,
+            task_env,
+            cwd,
+            cache,
+            inherited_env,
+            shell_identity,
+            dependency_outputs,
+        };
+        let json = serde_json::to_string(&definition)
+            .into_diagnostic()
+            .wrap_err("Failed to serialize task cache definition")?;
+        Ok(compute_string_hash(&json))
     }
 
     /// Prepare environment variables for task execution.
@@ -435,6 +447,72 @@ impl TaskState {
         })
     }
 
+    async fn check_status(
+        &self,
+        now: Instant,
+        dependency_outputs: &Outputs,
+        shell_env: &std::collections::HashMap<String, String>,
+        task_activity: &Activity,
+        cached_output: Option<serde_json::Value>,
+    ) -> Result<Option<TaskCompleted>> {
+        let Some(command) = &self.task.status else {
+            return Ok(None);
+        };
+
+        self.validate_cwd()?;
+        let env = self
+            .prepare_env(dependency_outputs, shell_env)
+            .wrap_err("Failed to prepare status command")?;
+        let exports_file = Self::create_tempfile("devenv_task_exports", "")?;
+        let context = ExecutionContext {
+            command,
+            cwd: self.task.cwd.as_deref(),
+            env,
+            use_sudo: self.sudo_context.is_some(),
+            output_file_path: std::path::Path::new("/dev/null"),
+            exports_file_path: exports_file.path(),
+        };
+        let mut command_process = context.build_command();
+        let status_activity = devenv_activity::start!(
+            Activity::command("check status")
+                .command(command)
+                .level(ActivityLevel::Debug)
+        );
+
+        match command_process.output().await {
+            Ok(status) if status.status.success() => {
+                let mut output = cached_output.unwrap_or_else(|| serde_json::json!({}));
+                if let Ok(data) = tokio::fs::read(exports_file.path()).await {
+                    let exports = Self::parse_exports(&data);
+                    if let (false, Some(env)) = (
+                        exports.is_empty(),
+                        get_or_create_devenv_env_mut(&mut output),
+                    ) {
+                        for (key, value) in exports {
+                            env.insert(key, serde_json::Value::String(value));
+                        }
+                    }
+                }
+                task_activity.cached();
+                Ok(Some(TaskCompleted::Skipped(Skipped::Cached(Output(Some(
+                    output,
+                ))))))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => {
+                status_activity.fail();
+                Ok(Some(TaskCompleted::Failed(
+                    now.elapsed(),
+                    TaskFailure {
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                        error: error.to_string(),
+                    },
+                )))
+            }
+        }
+    }
+
     /// Run this task with a pre-assigned activity ID.
     /// The Task::Hierarchy event has already been emitted; this emits Task::Start.
     pub async fn run(
@@ -476,110 +554,99 @@ impl TaskState {
         shell_env: &std::collections::HashMap<String, String>,
     ) -> Result<TaskCompleted> {
         tracing::trace!(
-            "Running task '{}' with exec_if_modified: {:?}, status: {}",
+            "running task '{}' with cache: {}, status: {}",
             self.task.name,
-            self.task.exec_if_modified,
+            self.task.cache.is_some(),
             self.task.status.is_some()
         );
 
-        // Check if we should skip based on cache (status command or exec_if_modified)
-        if !refresh_task_cache {
-            if let Some(cmd) = &self.task.status {
-                // First check if we have cached output from a previous run
-                let cached_output = self.get_cached_output(cache).await;
+        // The lock spans lookup, execution, validation, and commit. A waiter
+        // therefore always rechecks the completed entry before it can execute.
+        let cache_lock = if self.task.cache.is_some() {
+            match cache.acquire_task_lock(&self.task.name).await {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    tracing::warn!(
+                        task.name = %self.task.name,
+                        %error,
+                        "failed to acquire task cache lock; running uncached"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
-                self.validate_cwd()?;
-                let env = self
-                    .prepare_env(outputs, shell_env)
-                    .wrap_err("Failed to prepare status command")?;
-                let exports_file = Self::create_tempfile("devenv_task_exports", "")?;
-                let ctx = ExecutionContext {
-                    command: cmd,
-                    cwd: self.task.cwd.as_deref(),
-                    env,
-                    use_sudo: self.sudo_context.is_some(),
-                    output_file_path: std::path::Path::new("/dev/null"),
-                    exports_file_path: exports_file.path(),
-                };
-                let mut command = ctx.build_command();
+        let mut definition_hash = None;
+        let mut input_before = None;
+        if let (Some(cache_config), Some(_lock)) = (&self.task.cache, &cache_lock) {
+            let definition = self.cache_definition_hash(outputs, shell_env)?;
+            let inputs = cache.snapshot_paths(&cache_config.inputs, self.task.cwd.as_deref())?;
 
-                // Create a Command activity for the status check (automatically parented to task_activity)
-                let status_activity = devenv_activity::start!(
-                    Activity::command("check status")
-                        .command(cmd)
-                        .level(ActivityLevel::Debug)
-                );
-
-                match command.output().await {
-                    Ok(output) => {
-                        // A nonzero exit is a normal status/cache miss: fall through
-                        // to run the command. Only a spawn/execution error of the
-                        // status probe itself (the `Err` arm below) is a real failure.
-                        if output.status.success() {
-                            // Start with cached output, merge in any exports from the status command
-                            let mut result = cached_output.unwrap_or_else(|| serde_json::json!({}));
-                            if let Ok(data) = tokio::fs::read(exports_file.path()).await {
-                                let exports = Self::parse_exports(&data);
-                                if let (false, Some(env_obj)) = (
-                                    exports.is_empty(),
-                                    get_or_create_devenv_env_mut(&mut result),
-                                ) {
-                                    for (k, v) in exports {
-                                        env_obj.insert(k, serde_json::Value::String(v));
-                                    }
+            if !refresh_task_cache && inputs.missing_required().is_empty() {
+                match cache.get_cached_run(&self.task.name).await {
+                    Ok(Some(cached))
+                        if cached.definition_hash == definition
+                            && cached.input_snapshot == inputs =>
+                    {
+                        match cache.snapshot_paths(&cache_config.outputs, self.task.cwd.as_deref())
+                        {
+                            Ok(outputs_now)
+                                if outputs_now.missing_required().is_empty()
+                                    && outputs_now == cached.output_snapshot =>
+                            {
+                                if self.task.status.is_none() {
+                                    task_activity.cached();
+                                    return Ok(TaskCompleted::Skipped(Skipped::Cached(Output(
+                                        cached.output,
+                                    ))));
+                                }
+                                if let Some(completed) = self
+                                    .check_status(
+                                        now,
+                                        outputs,
+                                        shell_env,
+                                        task_activity,
+                                        cached.output,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(completed);
                                 }
                             }
-                            let output = Output(Some(result));
-                            tracing::trace!(
-                                "Task {} skipped with output: {:?}",
-                                self.task.name,
-                                output
-                            );
-                            task_activity.cached();
-                            return Ok(TaskCompleted::Skipped(Skipped::Cached(output)));
+                            Ok(_) => {
+                                tracing::trace!(task.name = %self.task.name, "declared outputs changed");
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    task.name = %self.task.name,
+                                    %error,
+                                    "failed to snapshot cached outputs; treating as a cache miss"
+                                );
+                            }
                         }
                     }
-                    Err(e) => {
-                        status_activity.fail();
-                        return Ok(TaskCompleted::Failed(
-                            now.elapsed(),
-                            TaskFailure {
-                                stdout: Vec::new(),
-                                stderr: Vec::new(),
-                                error: e.to_string(),
-                            },
-                        ));
-                    }
-                }
-            } else if !self.task.exec_if_modified.is_empty() {
-                let files_modified = match self.check_files_modified(cache).await {
-                    Ok(modified) => modified,
-                    Err(e) => {
+                    Ok(_) => {}
+                    Err(error) => {
                         tracing::warn!(
                             task.name = %self.task.name,
-                            error = %e,
-                            "Failed to check modified files, assuming modified",
+                            %error,
+                            "failed to read task cache; running task"
                         );
-                        true
                     }
-                };
-
-                if !files_modified {
-                    // First check if we have outputs in the current run's outputs map,
-                    // then fall back to the cache
-                    let task_output = match outputs.get(&self.task.name).cloned() {
-                        Some(output) => Some(output),
-                        None => self.get_cached_output(cache).await,
-                    };
-
-                    tracing::trace!(
-                        "Skipping task {} due to unmodified files, output: {:?}",
-                        self.task.name,
-                        task_output
-                    );
-                    task_activity.cached();
-                    return Ok(TaskCompleted::Skipped(Skipped::Cached(Output(task_output))));
                 }
+            }
+
+            definition_hash = Some(definition);
+            input_before = Some(inputs);
+        } else if !refresh_task_cache && self.task.status.is_some() {
+            let cached_output = self.get_cached_output(cache).await;
+            if let Some(completed) = self
+                .check_status(now, outputs, shell_env, task_activity, cached_output)
+                .await?
+            {
+                return Ok(completed);
             }
         }
 
@@ -620,44 +687,85 @@ impl TaskState {
         let callback = ActivityCallback::new(task_activity);
         let result = crate::executor::execute(ctx, &callback, cancellation).await;
 
-        // Only update file states on success - failed tasks should not be cached
-        if result.success {
-            let expanded_paths = find_files_matching_patterns(&self.task.exec_if_modified);
-            for path in &expanded_paths {
-                cache.update_file_state(&self.task.name, path).await?;
-            }
-            cache
-                .cleanup_stale_files(&self.task.name, &expanded_paths)
-                .await?;
-
-            if let Some(cmd) = &self.task.command {
-                cache.update_file_state(&self.task.name, cmd).await?;
-            }
-        }
-
         if result.error.as_deref() == Some("Task cancelled") {
             cmd_activity.cancel();
             task_activity.cancel();
             return Ok(TaskCompleted::Cancelled(Some(now.elapsed())));
         }
 
-        if result.success {
-            Ok(TaskCompleted::Success(
-                now.elapsed(),
-                Self::get_outputs(&outputs_file, &exports_file, &result.stdout_lines).await,
-            ))
-        } else {
+        if !result.success {
             cmd_activity.fail();
             task_activity.fail();
-            Ok(TaskCompleted::Failed(
+            return Ok(TaskCompleted::Failed(
                 now.elapsed(),
                 TaskFailure {
                     stdout: result.stdout_lines,
                     stderr: result.stderr_lines,
                     error: result.error.unwrap_or_else(|| "Unknown error".to_string()),
                 },
-            ))
+            ));
         }
+
+        let output = Self::get_outputs(&outputs_file, &exports_file, &result.stdout_lines).await;
+        if let (Some(cache_config), Some(definition), Some(inputs_before)) = (
+            &self.task.cache,
+            definition_hash.as_deref(),
+            input_before.as_ref(),
+        ) {
+            let inputs_after =
+                cache.snapshot_paths(&cache_config.inputs, self.task.cwd.as_deref())?;
+            let outputs_after =
+                cache.snapshot_paths(&cache_config.outputs, self.task.cwd.as_deref())?;
+            let missing_inputs = inputs_after.missing_required();
+            let missing_outputs = outputs_after.missing_required();
+            let contract_error = if !missing_inputs.is_empty() {
+                Some(format!(
+                    "required cache inputs are missing after task success: {}",
+                    missing_inputs.join(", ")
+                ))
+            } else if !missing_outputs.is_empty() {
+                Some(format!(
+                    "required cache outputs are missing after task success: {}",
+                    missing_outputs.join(", ")
+                ))
+            } else if inputs_before != &inputs_after {
+                Some("cache inputs changed while the task was running".to_string())
+            } else {
+                None
+            };
+
+            if let Some(error) = contract_error {
+                cmd_activity.fail();
+                task_activity.fail();
+                return Ok(TaskCompleted::Failed(
+                    now.elapsed(),
+                    TaskFailure {
+                        stdout: result.stdout_lines,
+                        stderr: result.stderr_lines,
+                        error,
+                    },
+                ));
+            }
+
+            if let Err(error) = cache
+                .commit_cached_run(
+                    &self.task.name,
+                    definition,
+                    &inputs_after,
+                    &outputs_after,
+                    output.0.as_ref(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    task.name = %self.task.name,
+                    %error,
+                    "failed to commit task cache; task result remains successful"
+                );
+            }
+        }
+
+        Ok(TaskCompleted::Success(now.elapsed(), output))
     }
 }
 

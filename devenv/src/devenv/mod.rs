@@ -1809,7 +1809,7 @@ impl Devenv {
     }
 
     /// Run enterShell tasks and return env vars exported by tasks (e.g., PATH with venv/bin).
-    /// Task failures are logged as warnings but don't prevent shell entry.
+    /// A failed lifecycle task prevents entry into a partially initialized shell.
     ///
     /// If `pre_captured_envs` is provided (e.g. from test() which already captured envs),
     /// those are used directly; otherwise a fresh capture is performed.
@@ -1824,8 +1824,7 @@ impl Devenv {
         };
 
         let task_configs = self.load_tasks().await?;
-        // Shell entry proceeds even if some tasks fail (matches interactive reload behavior).
-        let (_status, exports, messages) = self
+        let (status, exports, messages) = self
             .run_tasks_with_roots(
                 vec!["devenv:enterShell".to_string()],
                 task_configs,
@@ -1833,6 +1832,9 @@ impl Devenv {
                 verbosity,
             )
             .await?;
+        if status.has_failures() {
+            bail!("enterShell tasks failed");
+        }
         Ok((exports, messages))
     }
 
@@ -2225,7 +2227,7 @@ impl Devenv {
 
         // ── Phase 2: Loading and running enterShell tasks ─────────────
         let task_configs = self.load_tasks().await?;
-        let (_status, exports, _messages) = self
+        let (status, exports, _messages) = self
             .run_tasks_with_roots(
                 vec!["devenv:enterShell".to_string()],
                 task_configs.clone(),
@@ -2233,6 +2235,9 @@ impl Devenv {
                 verbosity,
             )
             .await?;
+        if status.has_failures() {
+            bail!("enterShell tasks failed");
+        }
         envs.extend(exports);
 
         // ── Phase 3: Running processes ──────────────────────────────
@@ -3246,9 +3251,12 @@ fn format_tasks_tree(tasks: &[tasks::TaskConfig]) -> String {
                 extra_info.push("has status check".to_string());
             }
 
-            if !task.exec_if_modified.is_empty() {
-                let files = task.exec_if_modified.join(", ");
-                extra_info.push(format!("watches: {files}"));
+            if let Some(cache) = &task.cache {
+                extra_info.push(format!(
+                    "cache: {} input(s), {} output(s)",
+                    cache.inputs.len(),
+                    cache.outputs.len()
+                ));
             }
 
             if !extra_info.is_empty() {
@@ -3310,7 +3318,7 @@ struct TaskListItem<'a> {
     has_exec: bool,
     has_status: bool,
     cwd: Option<&'a str>,
-    exec_if_modified: &'a [String],
+    cache: Option<&'a tasks::TaskCacheConfig>,
 }
 
 fn format_tasks_json(tasks: &[tasks::TaskConfig]) -> Result<String> {
@@ -3325,7 +3333,7 @@ fn format_tasks_json(tasks: &[tasks::TaskConfig]) -> Result<String> {
             has_exec: task.command.is_some(),
             has_status: task.status.is_some(),
             cwd: task.cwd.as_deref(),
-            exec_if_modified: &task.exec_if_modified,
+            cache: task.cache.as_ref(),
         })
         .collect();
 
@@ -4056,7 +4064,14 @@ mod tests {
             command: Some("cargo test".to_string()),
             status: Some("test -f target/debug/app".to_string()),
             cwd: Some("crates/app".to_string()),
-            exec_if_modified: vec!["src/**/*.rs".to_string()],
+            cache: Some(tasks::TaskCacheConfig {
+                inputs: vec![tasks::CachePath {
+                    path: "src/**/*.rs".to_string(),
+                    optional: false,
+                }],
+                outputs: Vec::new(),
+                env: Vec::new(),
+            }),
             ..Default::default()
         }];
 
@@ -4075,7 +4090,11 @@ mod tests {
                     "hasExec": true,
                     "hasStatus": true,
                     "cwd": "crates/app",
-                    "execIfModified": ["src/**/*.rs"]
+                    "cache": {
+                        "inputs": [{"path": "src/**/*.rs", "optional": false}],
+                        "outputs": [],
+                        "env": []
+                    }
                 }
             ])
         );

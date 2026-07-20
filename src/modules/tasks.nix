@@ -4,6 +4,40 @@ let
   listenType = import ./lib/listen.nix { inherit lib; };
   readyType = import ./lib/ready.nix { inherit lib; };
 
+  cachePathType = types.submodule {
+    options = {
+      path = lib.mkOption {
+        type = types.str;
+        description = "A literal path or glob, resolved relative to the task working directory.";
+      };
+      optional = lib.mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether the path may be absent without invalidating the cache contract.";
+      };
+    };
+  };
+
+  cacheType = types.submodule {
+    options = {
+      inputs = lib.mkOption {
+        type = types.listOf cachePathType;
+        default = [ ];
+        description = "Files and directories whose contents determine the cached result.";
+      };
+      outputs = lib.mkOption {
+        type = types.listOf cachePathType;
+        default = [ ];
+        description = "Files and directories produced by the task and validated on cache hits.";
+      };
+      env = lib.mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Inherited environment variables whose values determine the cached result.";
+      };
+    };
+  };
+
   devenv-tasks = import ./tasks/package.nix { inherit pkgs lib; };
 
   taskType = types.submodule
@@ -97,10 +131,14 @@ let
             default = mkCommand config.status true;
             description = "Path to the script to run.";
           };
-          execIfModified = lib.mkOption {
-            type = types.listOf types.str;
-            default = [ ];
-            description = "Paths to files that should trigger a task execution if modified.";
+          cache = lib.mkOption {
+            type = types.nullOr cacheType;
+            default = null;
+            description = ''
+              Content-addressed cache contract for this task. A cache hit requires the
+              task definition, declared inputs, inherited environment, dependency
+              outputs, and declared outputs to match the last successful run.
+            '';
           };
           config = lib.mkOption {
             type = types.attrsOf types.anything;
@@ -114,7 +152,7 @@ let
               before = config.before;
               command = config.command;
               input = config.input;
-              exec_if_modified = config.execIfModified;
+              cache = config.cache;
               env = config.env;
               cwd = config.cwd;
               show_output = config.showOutput;
@@ -385,8 +423,8 @@ in
         message = "The 'exports' option for a task can only be set when 'package' is a bash package.";
       }
       {
-        assertion = lib.all (task: task.status == null || task.execIfModified == [ ]) (lib.attrValues config.tasks);
-        message = "The 'status' and 'execIfModified' options cannot be used together. Use only one of them to determine whether a task should run.";
+        assertion = lib.all (task: task.cache == null || task.command != null) (lib.attrValues config.tasks);
+        message = "Tasks with a cache contract must define an executable command.";
       }
     ];
 
@@ -410,13 +448,16 @@ in
     tasks = {
       "devenv:enterShell" = {
         description = "Runs when entering the shell";
-        exec = ''
-          mkdir -p "$DEVENV_DOTFILE" || { echo "Failed to create $DEVENV_DOTFILE"; exit 1; }
-          # Remove first in case file is owned by another user (chmod would fail otherwise)
-          rm -f "$DEVENV_DOTFILE/load-exports" 2>/dev/null || true
-          echo "$DEVENV_TASK_ENV" > "$DEVENV_DOTFILE/load-exports"
-          chmod +x "$DEVENV_DOTFILE/load-exports"
-        '';
+        exec =
+          if config.devenv.cli.version == null || lib.versionOlder config.devenv.cli.version "2.0"
+          then ''
+            mkdir -p "$DEVENV_DOTFILE" || { echo "Failed to create $DEVENV_DOTFILE"; exit 1; }
+            # Remove first in case file is owned by another user (chmod would fail otherwise)
+            rm -f "$DEVENV_DOTFILE/load-exports" 2>/dev/null || true
+            echo "$DEVENV_TASK_ENV" > "$DEVENV_DOTFILE/load-exports"
+            chmod +x "$DEVENV_DOTFILE/load-exports"
+          ''
+          else null;
       };
       "devenv:enterTest" = {
         description = "Runs when entering the test environment";

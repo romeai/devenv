@@ -3,7 +3,7 @@
     "frontend:build" = {
       exec = "echo 'Building frontend...'";
       after = [ "frontend:test" ];
-      execIfModified = [ "src/frontend/*.js" "src/frontend/*.css" ];
+      cache.inputs = [{ path = "src/frontend/*.js"; optional = true; } { path = "src/frontend/*.css"; optional = true; }];
     };
 
     "frontend:test" = {
@@ -19,7 +19,7 @@
     "backend:build" = {
       exec = "echo 'Building backend...'";
       after = [ "backend:test" ];
-      execIfModified = [ "src/backend/**/*.py" ];
+      cache.inputs = [{ path = "src/backend/**/*.py"; optional = true; }];
     };
 
     "backend:test" = {
@@ -39,7 +39,7 @@
 
     "docs:generate" = {
       exec = "echo 'Generating documentation...'";
-      execIfModified = [ "docs/**/*.md" ];
+      cache.inputs = [{ path = "docs/**/*.md"; optional = true; }];
     };
 
     "docs:publish" = {

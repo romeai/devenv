@@ -21,9 +21,8 @@ let
   # Check if any individual hooks are enabled
   anyHookEnabled = builtins.any (hook: hook.enable or false) (lib.attrValues (cfg.hooks or { }));
 
-  # Absolute config path (quoted for shell use): git runs hooks from the
-  # repository toplevel, which differs from the devenv root when devenv
-  # lives in a subdirectory.
+  # Commands run from the devenv root. Installation converts this to a path
+  # relative to the Git toplevel so shared hooks remain valid in every worktree.
   configArg = ''"$DEVENV_ROOT/${cfg.configPath}"'';
 
   # A default module stub for when git-hooks is not available.
@@ -133,9 +132,6 @@ in
       ci = [ cfg.run ];
       packages = lib.mkAfter ([ package ] ++ (cfg.enabledPackages or [ ]));
       env.PREK_HOME = "${config.devenv.state}/prek";
-      enterShell = lib.mkAfter ''
-        mkdir -p "$PREK_HOME"
-      '';
 
       tasks = {
         "devenv:git-hooks:install" = {
@@ -146,15 +142,20 @@ in
               installStages = cfg.installStages;
             in
             ''
+              mkdir -p "$PREK_HOME"
               if ! ${git} rev-parse --git-dir &> /dev/null; then
                 echo 1>&2 "WARNING: git-hooks.nix: .git not found; skipping hook installation."
                 exit 0
               fi
 
+              git_toplevel="$(${git} rev-parse --show-toplevel)"
+              config_relative="$(${pkgs.coreutils}/bin/realpath --relative-to="$git_toplevel" ${configArg})"
+              cd "$git_toplevel"
+
               # Install hooks for configured stages
               if [ -z "${lib.concatStringsSep " " installStages}" ]; then
                 # Default: install pre-commit hook
-                ${executable} install -c ${configArg}
+                ${executable} install -f -c "$config_relative"
               else
                 for stage in ${lib.concatStringsSep " " installStages}; do
                   case $stage in
@@ -162,15 +163,40 @@ in
                       # Skip manual stage - it's not a git hook
                       ;;
                     commit|merge-commit|push)
-                      ${executable} install -c ${configArg} -t "pre-$stage"
+                      ${executable} install -f -c "$config_relative" -t "pre-$stage"
                       ;;
                     *)
-                      ${executable} install -c ${configArg} -t "$stage"
+                      ${executable} install -f -c "$config_relative" -t "$stage"
                       ;;
                   esac
                 done
               fi
             '';
+          status =
+            let
+              git = lib.getExe cfg.gitPackage;
+              installStages = if cfg.installStages == [ ] then [ "commit" ] else cfg.installStages;
+              hookNames = map
+                (stage:
+                  if stage == "commit" then "pre-commit"
+                  else if stage == "merge-commit" then "pre-merge-commit"
+                  else if stage == "push" then "pre-push"
+                  else stage)
+                (lib.filter (stage: stage != "manual") installStages);
+            in
+            ''
+              if ! ${git} rev-parse --git-dir &> /dev/null; then
+                exit 0
+              fi
+              git_toplevel="$(${git} rev-parse --show-toplevel)"
+              config_relative="$(${pkgs.coreutils}/bin/realpath --relative-to="$git_toplevel" ${configArg})"
+              ${lib.concatMapStringsSep "\n" (hook: ''
+                hook_path="$(${git} rev-parse --git-path hooks/${hook})"
+                [ -x "$hook_path" ]
+                ${pkgs.gnugrep}/bin/grep -F -- "$config_relative" "$hook_path" >/dev/null
+              '') hookNames}
+            '';
+          cache.inputs = [{ path = "${config.devenv.root}/${cfg.configPath}"; }];
           after = [ "devenv:files" ];
           before = [ "devenv:enterShell" ];
         };

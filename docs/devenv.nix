@@ -69,10 +69,8 @@
     "devenv:compile-requirements" = {
       before = [ "devenv:python:virtualenv" ];
       exec = "uv pip compile --no-header ${config.git.root}/docs/requirements.in -o ${config.git.root}/docs/requirements.txt";
-      execIfModified = [
-        "${config.git.root}/docs/requirements.in"
-        "${config.git.root}/docs/requirements.txt"
-      ];
+      cache.inputs = [{ path = "${config.git.root}/docs/requirements.in"; }];
+      cache.outputs = [{ path = "${config.git.root}/docs/requirements.txt"; }];
     };
     "docs:generate-badge" = {
       exec = "node ${config.git.root}/docs/src/assets/generate-badge.mjs";
