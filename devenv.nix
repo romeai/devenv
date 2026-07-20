@@ -148,11 +148,12 @@ in
   tasks."devenv:crate2nix" = {
     description = "Generate Cargo.nix from Cargo.lock";
     exec = "crate2nix generate -h nix/crate-hashes.json";
-    execIfModified = [
-      "Cargo.lock"
-      "Cargo.toml"
-      "*/Cargo.toml"
+    cache.inputs = [
+      { path = "Cargo.lock"; }
+      { path = "Cargo.toml"; }
+      { path = "*/Cargo.toml"; }
     ];
+    cache.outputs = [{ path = "Cargo.nix"; }];
   };
 
   git-hooks =

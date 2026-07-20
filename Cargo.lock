@@ -2901,6 +2901,7 @@ dependencies = [
  "devenv-core",
  "devenv-mailbox",
  "devenv-processes",
+ "fd-lock",
  "ignore",
  "miette",
  "nix 0.31.3",

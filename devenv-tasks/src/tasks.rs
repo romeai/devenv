@@ -861,6 +861,34 @@ impl Tasks {
             .collect()
     }
 
+    /// Collect every transitive prerequisite of a task. Task commands receive
+    /// only these outputs, so their data dependencies match their DAG edges.
+    fn collect_ancestor_indices(&self, index: NodeIndex) -> HashSet<NodeIndex> {
+        let mut ancestors = HashSet::new();
+        let mut pending: Vec<_> = self
+            .graph
+            .neighbors_directed(index, petgraph::Direction::Incoming)
+            .collect();
+        while let Some(candidate) = pending.pop() {
+            if ancestors.insert(candidate) {
+                pending.extend(
+                    self.graph
+                        .neighbors_directed(candidate, petgraph::Direction::Incoming),
+                );
+            }
+        }
+        ancestors
+    }
+
+    /// Names of every transitive prerequisite of a task, for output filtering.
+    async fn collect_ancestor_names(&self, index: NodeIndex) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for dependency_index in self.collect_ancestor_indices(index) {
+            names.insert(self.graph[dependency_index].read().await.task.name.clone());
+        }
+        names
+    }
+
     /// Dependencies inside the cold schedule.
     fn collect_scheduled_deps(
         &self,
@@ -911,6 +939,7 @@ impl Tasks {
             }
 
             let deps = self.collect_deps(node);
+            let dependency_names = self.collect_ancestor_names(node).await;
             let outputs = Arc::clone(&self.outputs);
             let notify_finished = Arc::clone(&self.notify_finished);
             let notify_ui = Arc::clone(&self.notify_ui);
@@ -925,6 +954,7 @@ impl Tasks {
                 Self::run_oneshot_task(
                     task_state,
                     deps,
+                    dependency_names,
                     outputs,
                     notify_finished,
                     notify_ui,
@@ -944,6 +974,7 @@ impl Tasks {
     async fn run_oneshot_task(
         task_state: Arc<RwLock<TaskState>>,
         deps: Vec<(Arc<RwLock<TaskState>>, DependencyKind)>,
+        dependency_names: HashSet<String>,
         outputs: Arc<Mutex<Outputs>>,
         notify_finished: Arc<Notify>,
         notify_ui: Arc<Notify>,
@@ -983,13 +1014,20 @@ impl Tasks {
         notify_ui.notify_one();
 
         let completed = {
-            let outputs = outputs.lock().await.clone();
+            let all_outputs = outputs.lock().await.clone();
+            let visible_outputs = Outputs(
+                all_outputs
+                    .0
+                    .into_iter()
+                    .filter(|(name, _)| dependency_names.contains(name))
+                    .collect(),
+            );
             match task_state
                 .read()
                 .await
                 .run(
                     now,
-                    &outputs,
+                    &visible_outputs,
                     &cache,
                     shutdown.cancellation_token(),
                     task_activity_id,
@@ -1022,7 +1060,13 @@ impl Tasks {
                         .await
                         .insert(task_state.task.name.clone(), output.clone());
 
-                    if let Some(output_value) = output.as_object() {
+                    // Cache-v2 tasks commit their output atomically with
+                    // snapshots inside TaskState. The legacy task_run row is
+                    // retained only for status-only tasks.
+                    if task_state.task.cache.is_none()
+                        && task_state.task.status.is_some()
+                        && let Some(output_value) = output.as_object()
+                    {
                         let task_name = &task_state.task.name;
                         if let Err(e) = cache
                             .store_task_output(
@@ -1044,26 +1088,6 @@ impl Tasks {
                         .lock()
                         .await
                         .insert(task_state.task.name.clone(), output.clone());
-
-                    if (task_state.task.status.is_some()
-                        || !task_state.task.exec_if_modified.is_empty())
-                        && let Some(output_value) = output.as_object()
-                    {
-                        let task_name = &task_state.task.name;
-                        if let Err(e) = cache
-                            .store_task_output(
-                                task_name,
-                                &serde_json::Value::Object(output_value.clone()),
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                task = %task_name,
-                                error = %e,
-                                "failed to store task output"
-                            );
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -1523,6 +1547,7 @@ impl Tasks {
             // Oneshot task: spawn into background with dependency checking,
             // so independent tasks can run in parallel.
             let deps = self.collect_scheduled_deps(*index, &scheduled);
+            let dependency_names = self.collect_ancestor_names(*index).await;
 
             // TODO: consider Arc-ing self at this point
             let task_state_clone = Arc::clone(task_state);
@@ -1546,6 +1571,7 @@ impl Tasks {
                     Self::run_oneshot_task(
                         task_state_clone,
                         deps,
+                        dependency_names,
                         outputs_clone,
                         notify_finished_clone.clone(),
                         notify_ui_clone.clone(),
@@ -1557,6 +1583,7 @@ impl Tasks {
                         shell_env,
                     )
                     .await;
+
 
                     Self::signal_task_done(
                         &completed_tasks_clone,
