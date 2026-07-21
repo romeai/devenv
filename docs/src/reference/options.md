@@ -37640,6 +37640,184 @@ null
 
 
 
+## tasks.\<name>.cache
+
+
+
+Content-addressed cache contract for this task. A cache hit requires the
+task definition, declared inputs, inherited environment, dependency
+outputs, and declared outputs to match the last successful run.
+
+
+
+*Type:*
+null or (submodule)
+
+
+
+*Default:*
+
+```nix
+null
+```
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.env
+
+
+
+Inherited environment variables whose values determine the cached result.
+
+
+
+*Type:*
+list of string
+
+
+
+*Default:*
+
+```nix
+[ ]
+```
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.inputs
+
+
+
+Files and directories whose contents determine the cached result.
+
+
+
+*Type:*
+list of (submodule)
+
+
+
+*Default:*
+
+```nix
+[ ]
+```
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.inputs.\*.optional
+
+
+
+Whether the path may be absent without invalidating the cache contract.
+
+
+
+*Type:*
+boolean
+
+
+
+*Default:*
+
+```nix
+false
+```
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.inputs.\*.path
+
+
+
+A literal path or glob, resolved relative to the task working directory.
+
+
+
+*Type:*
+string
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.outputs
+
+
+
+Files and directories produced by the task and validated on cache hits.
+
+
+
+*Type:*
+list of (submodule)
+
+
+
+*Default:*
+
+```nix
+[ ]
+```
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.outputs.\*.optional
+
+
+
+Whether the path may be absent without invalidating the cache contract.
+
+
+
+*Type:*
+boolean
+
+
+
+*Default:*
+
+```nix
+false
+```
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
+## tasks.\<name>.cache.outputs.\*.path
+
+
+
+A literal path or glob, resolved relative to the task working directory.
+
+
+
+*Type:*
+string
+
+*Declared by:*
+ - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
+
+
+
 ## tasks.\<name>.cwd
 
 
@@ -37729,30 +37907,6 @@ null or string
 
 ```nix
 null
-```
-
-*Declared by:*
- - [https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix](https://github.com/cachix/devenv/blob/main/src/modules/tasks.nix)
-
-
-
-## tasks.\<name>.execIfModified
-
-
-
-Paths to files that should trigger a task execution if modified.
-
-
-
-*Type:*
-list of string
-
-
-
-*Default:*
-
-```nix
-[ ]
 ```
 
 *Declared by:*
