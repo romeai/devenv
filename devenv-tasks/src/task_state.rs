@@ -563,17 +563,14 @@ impl TaskState {
         // The lock spans lookup, execution, validation, and commit. A waiter
         // therefore always rechecks the completed entry before it can execute.
         let cache_lock = if self.task.cache.is_some() {
-            match cache.acquire_task_lock(&self.task.name).await {
-                Ok(lock) => Some(lock),
-                Err(error) => {
-                    tracing::warn!(
-                        task.name = %self.task.name,
-                        %error,
-                        "failed to acquire task cache lock; running uncached"
-                    );
-                    None
-                }
-            }
+            Some(
+                cache
+                    .acquire_task_lock(&self.task.name)
+                    .await
+                    .wrap_err_with(|| {
+                        format!("Failed to acquire cache lock for task '{}'", self.task.name)
+                    })?,
+            )
         } else {
             None
         };
