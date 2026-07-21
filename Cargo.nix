@@ -8908,6 +8908,10 @@ rec {
             packageId = "devenv-processes";
           }
           {
+            name = "fd-lock";
+            packageId = "fd-lock";
+          }
+          {
             name = "ignore";
             packageId = "ignore";
           }
