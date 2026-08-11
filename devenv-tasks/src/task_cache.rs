@@ -85,6 +85,47 @@ impl Drop for TaskLock {
     }
 }
 
+/// Acquire an exclusive cross-process advisory lock on `lock_path` without
+/// blocking a Tokio worker.
+async fn acquire_lock_file(lock_path: PathBuf) -> CacheResult<TaskLock> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    let (acquired_tx, acquired_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+
+    let worker = tokio::task::spawn_blocking(move || {
+        let mut lock = RwLock::new(file);
+        match lock.write() {
+            Ok(_guard) => {
+                let _ = acquired_tx.send(Ok::<_, String>(()));
+                let _ = release_rx.blocking_recv();
+            }
+            Err(error) => {
+                let _ = acquired_tx.send(Err(error.to_string()));
+            }
+        }
+    });
+
+    match acquired_rx.await {
+        Ok(Ok(())) => Ok(TaskLock {
+            release: Some(release_tx),
+            _worker: worker,
+        }),
+        Ok(Err(error)) => Err(CacheError::initialization(format!(
+            "failed to lock {}: {error}",
+            lock_path.display()
+        ))),
+        Err(error) => Err(CacheError::initialization(format!(
+            "task lock worker stopped before locking {}: {error}",
+            lock_path.display()
+        ))),
+    }
+}
+
 /// Task cache manager.
 #[derive(Clone, Debug)]
 pub struct TaskCache {
@@ -103,7 +144,14 @@ impl TaskCache {
             .unwrap_or_else(|| Path::new("."))
             .join("task-locks");
         fs::create_dir_all(&lock_dir)?;
+        // A non-native process manager launches every per-process wrapper at
+        // once; unserialized, they race to create, WAL-switch, and migrate
+        // the shared database (SQLITE_IOERR at init). Upstream #2897
+        // serializes only the devenv-CLI launch path, so hold a cross-process
+        // lock here at the source.
+        let init_lock = acquire_lock_file(lock_dir.join("__task-cache-init.lock")).await?;
         let db = Database::new(db_path, &MIGRATIONS).await?;
+        drop(init_lock);
         Ok(Self { db, lock_dir })
     }
 
@@ -113,43 +161,7 @@ impl TaskCache {
 
     /// Acquire the task's cross-process lock without blocking a Tokio worker.
     pub async fn acquire_task_lock(&self, task_name: &str) -> CacheResult<TaskLock> {
-        let lock_path = self.lock_dir.join(format!("{task_name}.lock"));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        let (acquired_tx, acquired_rx) = oneshot::channel();
-        let (release_tx, release_rx) = oneshot::channel();
-
-        let worker = tokio::task::spawn_blocking(move || {
-            let mut lock = RwLock::new(file);
-            match lock.write() {
-                Ok(_guard) => {
-                    let _ = acquired_tx.send(Ok::<_, String>(()));
-                    let _ = release_rx.blocking_recv();
-                }
-                Err(error) => {
-                    let _ = acquired_tx.send(Err(error.to_string()));
-                }
-            }
-        });
-
-        match acquired_rx.await {
-            Ok(Ok(())) => Ok(TaskLock {
-                release: Some(release_tx),
-                _worker: worker,
-            }),
-            Ok(Err(error)) => Err(CacheError::initialization(format!(
-                "failed to lock {}: {error}",
-                lock_path.display()
-            ))),
-            Err(error) => Err(CacheError::initialization(format!(
-                "task lock worker stopped before locking {}: {error}",
-                lock_path.display()
-            ))),
-        }
+        acquire_lock_file(self.lock_dir.join(format!("{task_name}.lock"))).await
     }
 
     pub fn snapshot_paths(
