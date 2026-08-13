@@ -4067,7 +4067,7 @@ mod tests {
             cache: Some(tasks::TaskCacheConfig {
                 inputs: vec![tasks::CachePath {
                     path: "src/**/*.rs".to_string(),
-                    optional: false,
+                    ..Default::default()
                 }],
                 outputs: Vec::new(),
                 env: Vec::new(),

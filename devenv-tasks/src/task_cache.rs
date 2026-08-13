@@ -4,7 +4,7 @@
 //! validation, and a second input snapshot. A per-task filesystem lock keeps
 //! the lookup/run/commit sequence single-writer across devenv processes.
 
-use crate::config::CachePath;
+use crate::config::{CachePath, SnapshotMode};
 use devenv_cache_core::{
     db::Database,
     error::{CacheError, CacheResult},
@@ -65,7 +65,7 @@ pub struct CachedRun {
 pub fn snapshot_executable(command: &str) -> CacheResult<Option<PathState>> {
     let path = Path::new(command);
     match fs::symlink_metadata(path) {
-        Ok(_) => snapshot_path(path).map(Some),
+        Ok(_) => snapshot_path(path, SnapshotMode::Content).map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -176,13 +176,17 @@ impl TaskCache {
 
         let mut snapshots = Vec::with_capacity(declarations.len());
         for declaration in declarations {
-            let mut matches = expand_path(&declaration.path, &base)?;
+            let mut matches = if declaration.paths_from {
+                expand_paths_from(declaration, &base)?
+            } else {
+                expand_path(&declaration.path, &base)?
+            };
             matches.sort();
             matches.dedup();
 
             let matches = matches
                 .iter()
-                .map(|path| snapshot_path(path))
+                .map(|path| snapshot_path(path, declaration.snapshot))
                 .collect::<CacheResult<Vec<_>>>()?;
             snapshots.push(DeclaredPathSnapshot {
                 declaration: declaration.clone(),
@@ -380,9 +384,84 @@ fn expand_path(declaration: &str, cwd: &Path) -> CacheResult<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn snapshot_path(path: &Path) -> CacheResult<PathState> {
-    let metadata = fs::symlink_metadata(path)?;
+/// Resolve a pathsFrom declaration: read the newline-delimited list the
+/// declared file holds, resolving each entry like a declared path. A missing
+/// list is either a stable empty set (optional) or a poisoned snapshot that
+/// can never match a stored one (required): the list is the cache contract,
+/// and an absent contract must run the task rather than silently pass it.
+fn expand_paths_from(declaration: &CachePath, base: &Path) -> CacheResult<Vec<PathBuf>> {
+    let declared = Path::new(&declaration.path);
+    let list = if declared.is_absolute() {
+        declared.to_path_buf()
+    } else {
+        base.join(declared)
+    };
+    let text = match fs::read_to_string(&list) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if declaration.optional {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![poison_marker(&list)]);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(text
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let entry = Path::new(line);
+            if entry.is_absolute() {
+                entry.to_path_buf()
+            } else {
+                base.join(entry)
+            }
+        })
+        .collect())
+}
+
+/// A path that cannot exist, unique per call, so the snapshot it produces
+/// never equals a stored one — a wall-clock component keeps it unique across
+/// process restarts too, since the stored snapshot came from an earlier run.
+fn poison_marker(list: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    list.join(format!(".devenv-missing-path-list-{nanos}-{n}"))
+}
+
+fn snapshot_path(path: &Path, mode: SnapshotMode) -> CacheResult<PathState> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Reachable only via pathsFrom entries and the poison marker:
+            // expand_path drops nonexistent literals before this point. A
+            // listed-but-absent input is a real state worth recording (the
+            // poison marker exploits exactly that to force a miss).
+            return Ok(PathState {
+                path: path.to_string_lossy().into_owned(),
+                kind: "missing".to_string(),
+                content_hash: compute_string_hash(&format!("missing:{}", path.display())),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
     let file_type = metadata.file_type();
+    if matches!(mode, SnapshotMode::Listing) {
+        let (kind, content_hash) = if file_type.is_dir() {
+            ("directory-listing", hash_directory_listing(path)?)
+        } else {
+            ("exists", compute_string_hash("exists"))
+        };
+        return Ok(PathState {
+            path: path.to_string_lossy().into_owned(),
+            kind: kind.to_string(),
+            content_hash,
+        });
+    }
     let (kind, content_hash) = if file_type.is_symlink() {
         (
             "symlink",
@@ -411,6 +490,18 @@ fn snapshot_path(path: &Path) -> CacheResult<PathState> {
         kind: kind.to_string(),
         content_hash,
     })
+}
+
+/// Immediate child NAMES only, sorted — no contents, no recursion. An entry
+/// appearing or vanishing changes the hash; editing one does not. Pairing
+/// listings over a tree's directories with a content list of its files gives
+/// exact inputs plus addition detection without re-stating any filter.
+fn hash_directory_listing(root: &Path) -> CacheResult<String> {
+    let mut names = fs::read_dir(root)?
+        .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    Ok(compute_string_hash(&names.join("\n")))
 }
 
 fn hash_directory(root: &Path) -> CacheResult<String> {
@@ -479,11 +570,11 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&first, &input).unwrap();
 
-        let before = snapshot_path(&input).unwrap();
+        let before = snapshot_path(&input, SnapshotMode::Content).unwrap();
         fs::remove_file(&input).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&second, &input).unwrap();
-        let after = snapshot_path(&input).unwrap();
+        let after = snapshot_path(&input, SnapshotMode::Content).unwrap();
 
         assert_ne!(before, after);
         assert_eq!(after.kind, "symlink");
@@ -516,5 +607,104 @@ mod tests {
         assert_eq!(cached.input_snapshot, snapshot);
         assert_eq!(cached.output_snapshot, snapshot);
         assert_eq!(cached.output, Some(output));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_mode_tests {
+    use super::*;
+    use crate::config::SnapshotMode;
+
+    fn write(path: &Path, content: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn listing_ignores_edits_but_sees_additions() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("src");
+        write(&d.join("a.txt"), "one");
+
+        let before = snapshot_path(&d, SnapshotMode::Listing).unwrap();
+        write(&d.join("a.txt"), "EDITED");
+        let edited = snapshot_path(&d, SnapshotMode::Listing).unwrap();
+        assert_eq!(
+            before.content_hash, edited.content_hash,
+            "an edit must not change a listing snapshot"
+        );
+
+        write(&d.join("b.txt"), "new");
+        let added = snapshot_path(&d, SnapshotMode::Listing).unwrap();
+        assert_ne!(
+            before.content_hash, added.content_hash,
+            "a new child must change a listing snapshot"
+        );
+
+        fs::remove_file(d.join("b.txt")).unwrap();
+        let removed = snapshot_path(&d, SnapshotMode::Listing).unwrap();
+        assert_eq!(
+            before.content_hash, removed.content_hash,
+            "removing the child must restore the listing snapshot"
+        );
+    }
+
+    #[test]
+    fn listing_is_not_recursive() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("src");
+        write(&d.join("sub/a.txt"), "one");
+        let before = snapshot_path(&d, SnapshotMode::Listing).unwrap();
+        write(&d.join("sub/b.txt"), "new");
+        let after = snapshot_path(&d, SnapshotMode::Listing).unwrap();
+        assert_eq!(
+            before.content_hash, after.content_hash,
+            "a listing covers immediate children only; declare each directory"
+        );
+    }
+
+    #[test]
+    fn paths_from_resolves_and_hashes_content() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("watched.txt"), "v1");
+        write(&dir.path().join("list"), "watched.txt\n");
+        let decl = CachePath {
+            path: "list".to_string(),
+            paths_from: true,
+            ..Default::default()
+        };
+
+        let paths = expand_paths_from(&decl, dir.path()).unwrap();
+        assert_eq!(paths, vec![dir.path().join("watched.txt")]);
+
+        let before = snapshot_path(&paths[0], SnapshotMode::Content).unwrap();
+        write(&dir.path().join("watched.txt"), "v2");
+        let after = snapshot_path(&paths[0], SnapshotMode::Content).unwrap();
+        assert_ne!(before.content_hash, after.content_hash);
+    }
+
+    #[test]
+    fn missing_required_list_poisons_missing_optional_list_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let required = CachePath {
+            path: "absent".to_string(),
+            paths_from: true,
+            ..Default::default()
+        };
+        let a = expand_paths_from(&required, dir.path()).unwrap();
+        let b = expand_paths_from(&required, dir.path()).unwrap();
+        assert_eq!(a.len(), 1);
+        assert_ne!(a, b, "poison markers must never repeat, so snapshots never match");
+        let pa = snapshot_path(&a[0], SnapshotMode::Content).unwrap();
+        let pb = snapshot_path(&b[0], SnapshotMode::Content).unwrap();
+        assert_ne!(pa.content_hash, pb.content_hash);
+
+        let optional = CachePath {
+            path: "absent".to_string(),
+            paths_from: true,
+            optional: true,
+            ..Default::default()
+        };
+        assert!(expand_paths_from(&optional, dir.path()).unwrap().is_empty());
     }
 }

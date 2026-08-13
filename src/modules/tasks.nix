@@ -15,6 +15,27 @@ let
         default = false;
         description = "Whether the path may be absent without invalidating the cache contract.";
       };
+      snapshot = lib.mkOption {
+        type = types.enum [ "content" "listing" ];
+        default = "content";
+        description = ''
+          How to snapshot each matched path. "content" hashes file contents
+          (directories recursively). "listing" hashes only a directory's
+          immediate child names — invalidating when files appear or vanish,
+          not when they are edited.
+        '';
+      };
+      pathsFrom = lib.mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Treat `path` as a FILE holding newline-delimited paths and snapshot
+          those instead. Lets a task watch a generated input set without
+          baking it into the task definition. When the list file is missing:
+          optional = true yields a stable empty set; optional = false
+          poisons the snapshot so the task always runs.
+        '';
+      };
     };
   };
 
