@@ -242,6 +242,43 @@ impl Tasks {
     }
 
     /// Get the current task completion status
+    /// A human-readable report of every failed task: the error and the tail of
+    /// the captured output. The standalone binary's UI prints this; embedded
+    /// callers (the devenv CLI) previously discarded it and surfaced a bare
+    /// "tasks failed" — a `command not found` inside a task was invisible.
+    pub async fn format_failures(&self) -> String {
+        let mut report = String::new();
+        for index in &self.tasks_order {
+            let task_state = self.graph[*index].read().await;
+            if let TaskStatus::Completed(TaskCompleted::Failed(_, failure)) = &task_state.status {
+                report.push_str(&format!(
+                    "\n--- {} failed: {}\n",
+                    task_state.task.name, failure.error
+                ));
+                let tail = |lines: &[(std::time::Instant, String)], n: usize| -> String {
+                    lines
+                        .iter()
+                        .rev()
+                        .take(n)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .map(|(_, l)| format!("    {l}\n"))
+                        .collect()
+                };
+                if !failure.stderr.is_empty() {
+                    report.push_str(&format!("--- {} stderr (tail):\n", task_state.task.name));
+                    report.push_str(&tail(&failure.stderr, 15));
+                }
+                if !failure.stdout.is_empty() {
+                    report.push_str(&format!("--- {} stdout (tail):\n", task_state.task.name));
+                    report.push_str(&tail(&failure.stdout, 5));
+                }
+            }
+        }
+        report
+    }
+
     pub async fn get_completion_status(&self) -> TasksStatus {
         let mut status = TasksStatus::new();
 

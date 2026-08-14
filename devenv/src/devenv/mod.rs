@@ -3058,6 +3058,12 @@ async fn run_tasks(
         let _ = tasks.process_manager().stop_all().await;
     }
     let status = tasks.get_completion_status().await;
+    if status.has_failures() {
+        let report = tasks.format_failures().await;
+        if !report.is_empty() {
+            eprintln!("{report}");
+        }
+    }
     Ok((status, outputs))
 }
 
