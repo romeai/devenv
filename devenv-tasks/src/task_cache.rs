@@ -420,17 +420,21 @@ fn expand_paths_from(declaration: &CachePath, base: &Path) -> CacheResult<Vec<Pa
         .collect())
 }
 
-/// A path that cannot exist, unique per call, so the snapshot it produces
-/// never equals a stored one — a wall-clock component keeps it unique across
-/// process restarts too, since the stored snapshot came from an earlier run.
+/// A path that cannot exist, STABLE within this process and unique across
+/// processes. Both halves are load-bearing: the runner snapshots inputs
+/// before AND after a task and fails it when they differ, so a per-call
+/// marker turned every missing-list run into "cache inputs changed while the
+/// task was running" — the stored snapshot from an EARLIER process is what
+/// must never match, and a per-process constant achieves exactly that.
 fn poison_marker(list: &Path) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    list.join(format!(".devenv-missing-path-list-{nanos}-{n}"))
+    static MARKER: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let nanos = MARKER.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_else(|_| std::process::id() as u128)
+    });
+    list.join(format!(".devenv-missing-path-list-{nanos}"))
 }
 
 fn snapshot_path(path: &Path, mode: SnapshotMode) -> CacheResult<PathState> {
@@ -694,10 +698,14 @@ mod snapshot_mode_tests {
         let a = expand_paths_from(&required, dir.path()).unwrap();
         let b = expand_paths_from(&required, dir.path()).unwrap();
         assert_eq!(a.len(), 1);
-        assert_ne!(a, b, "poison markers must never repeat, so snapshots never match");
+        // Stable WITHIN a process: the runner snapshots before and after a
+        // task and fails it on any difference, so the two must agree here.
+        // Uniqueness is across processes (wall-clock seeded), which a unit
+        // test cannot observe; the in-situ check is entry-after-entry miss.
+        assert_eq!(a, b, "poison must be stable within a process");
         let pa = snapshot_path(&a[0], SnapshotMode::Content).unwrap();
         let pb = snapshot_path(&b[0], SnapshotMode::Content).unwrap();
-        assert_ne!(pa.content_hash, pb.content_hash);
+        assert_eq!(pa.content_hash, pb.content_hash);
 
         let optional = CachePath {
             path: "absent".to_string(),
