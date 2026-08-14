@@ -3058,6 +3058,12 @@ async fn run_tasks(
         let _ = tasks.process_manager().stop_all().await;
     }
     let status = tasks.get_completion_status().await;
+    if status.has_failures() {
+        let report = tasks.format_failures().await;
+        if !report.is_empty() {
+            eprintln!("{report}");
+        }
+    }
     Ok((status, outputs))
 }
 
@@ -4067,7 +4073,7 @@ mod tests {
             cache: Some(tasks::TaskCacheConfig {
                 inputs: vec![tasks::CachePath {
                     path: "src/**/*.rs".to_string(),
-                    optional: false,
+                    ..Default::default()
                 }],
                 outputs: Vec::new(),
                 env: Vec::new(),

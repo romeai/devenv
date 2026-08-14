@@ -4,12 +4,35 @@ use crate::types::{DependencyKind, DependencySpec, TaskType};
 use devenv_processes::ProcessConfig;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapshotMode {
+    /// Hash file contents (directories: recursive contents). The default.
+    #[default]
+    Content,
+    /// Hash only a directory's immediate child NAMES, not contents. Catches
+    /// files appearing or vanishing without invalidating on edits — pair it
+    /// with an exact content list to get precise inputs plus addition safety.
+    /// On a non-directory this degrades to an existence marker.
+    Listing,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CachePath {
     pub path: String,
     #[serde(default)]
     pub optional: bool,
+    #[serde(default)]
+    pub snapshot: SnapshotMode,
+    /// When set, `path` names a FILE containing newline-delimited paths
+    /// (resolved like `path` itself); each listed path is snapshotted under
+    /// `snapshot`. Lets a task watch a generated set of inputs without baking
+    /// the set into the task definition. A missing list file with
+    /// `optional = false` poisons the snapshot (permanent miss): an absent
+    /// contract must run the task, never silently pass it.
+    #[serde(default, rename = "pathsFrom")]
+    pub paths_from: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
