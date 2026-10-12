@@ -1,8 +1,8 @@
 //! Pre-serialized arguments for the Nix bootstrap entry point.
 //!
 //! The framework owns the schema (today: [`crate::nix_args::NixArgs<'a>`]),
-//! serializes it once via [`BootstrapArgs::from_serializable`], and shares
-//! the resulting value with the backend. Backends never see
+//! serializes it once via [`crate::nix_args::NixArgs::bootstrap_args`], and
+//! shares the resulting value with the backend. Backends never see
 //! [`crate::nix_args::NixArgs`] — the payload is opaque Nix code by the
 //! time it crosses the seam.
 
@@ -17,23 +17,46 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct BootstrapArgs {
     serialized: Arc<str>,
+    cache_key_seed: Arc<str>,
 }
 
 impl BootstrapArgs {
     /// Serialize any [`serde::Serialize`] value via `ser_nix`.
     pub fn from_serializable<T: serde::Serialize>(value: &T) -> Result<Self> {
-        let serialized = ser_nix::to_string(value)
-            .map_err(|e| miette::miette!("Failed to serialize bootstrap args: {}", e))?;
+        let serialized: Arc<str> = Arc::from(serialize(value)?);
         Ok(Self {
-            serialized: Arc::from(serialized),
+            cache_key_seed: serialized.clone(),
+            serialized,
         })
     }
 
-    /// Borrow the serialized Nix expression. Used both as the payload
-    /// spliced into the bootstrap import call and as the eval-cache key seed.
+    /// Like [`Self::from_serializable`], but the eval cache keys on
+    /// `cache_key_value` rather than on the payload.
+    pub fn with_cache_key_seed<T: serde::Serialize, K: serde::Serialize>(
+        value: &T,
+        cache_key_value: &K,
+    ) -> Result<Self> {
+        Ok(Self {
+            serialized: Arc::from(serialize(value)?),
+            cache_key_seed: Arc::from(serialize(cache_key_value)?),
+        })
+    }
+
+    /// Borrow the serialized Nix expression: the payload spliced into the
+    /// bootstrap import call.
     pub fn as_str(&self) -> &str {
         &self.serialized
     }
+
+    /// What the eval cache keys on in place of the payload.
+    pub fn cache_key_seed(&self) -> &str {
+        &self.cache_key_seed
+    }
+}
+
+fn serialize<T: serde::Serialize>(value: &T) -> Result<String> {
+    ser_nix::to_string(value)
+        .map_err(|e| miette::miette!("Failed to serialize bootstrap args: {}", e))
 }
 
 impl AsRef<str> for BootstrapArgs {

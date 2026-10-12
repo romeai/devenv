@@ -1371,7 +1371,7 @@ impl Devenv {
     pub fn shell_cache_key(&self) -> Option<devenv_eval_cache::EvalCacheKey> {
         let bootstrap_args = self.backend.bootstrap_args();
         let cache_key_args = devenv_core::evaluator::eval_cache_key_args(
-            bootstrap_args.as_str(),
+            bootstrap_args,
             self.port_allocator.is_enabled(),
             self.port_allocator.is_strict(),
         );
@@ -3406,7 +3406,7 @@ fn build_bootstrap_args(
         devenv_state: paths.state.as_deref(),
     };
 
-    BootstrapArgs::from_serializable(&args)
+    args.bootstrap_args()
 }
 
 fn resolve_secretspec_into(
