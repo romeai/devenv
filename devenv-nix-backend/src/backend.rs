@@ -247,7 +247,7 @@ fn cache_key_for(
     attr_name: &str,
 ) -> EvalCacheKey {
     let cache_key_args = eval_cache_key_args(
-        bootstrap_args.as_str(),
+        bootstrap_args,
         port_allocator.is_enabled(),
         port_allocator.is_strict(),
     );
@@ -354,7 +354,7 @@ impl NixCBackend {
             return;
         }
         let cache_key_args = eval_cache_key_args(
-            self.bootstrap_args.as_str(),
+            &self.bootstrap_args,
             self.port_allocator.is_enabled(),
             self.port_allocator.is_strict(),
         );

@@ -4,6 +4,7 @@
 //! when assembling the devenv environment. The struct is serialized to Nix syntax
 //! using the `ser_nix` crate and inserted into the flake template.
 
+use crate::bootstrap_args::BootstrapArgs;
 use crate::config::{AndroidSdkConfig, Input, NixpkgsConfig};
 use miette::{Result, miette};
 use ser_nix::NixLiteral;
@@ -407,6 +408,20 @@ pub struct NixArgs<'a> {
     /// When set, overrides the default of devenv_dotfile/state.
     /// Used during testing to isolate runtime state in a temporary directory.
     pub devenv_state: Option<&'a Path>,
+}
+
+impl NixArgs<'_> {
+    /// The eval cache is keyed without `hostname`: it follows the network on
+    /// a laptop, and evaluation reads it only to activate
+    /// `profiles.hostname.<name>`. A project that defines hostname profiles
+    /// is therefore served whichever host's result was cached first.
+    pub fn bootstrap_args(&self) -> Result<BootstrapArgs> {
+        let cache_key_args = NixArgs {
+            hostname: None,
+            ..self.clone()
+        };
+        BootstrapArgs::with_cache_key_seed(self, &cache_key_args)
+    }
 }
 
 fn serialize_nixpkgs_config_for_nix<S: Serializer>(
@@ -853,5 +868,58 @@ android_sdk:
   };
 }; }"#;
         assert_eq!(serialized, expected);
+    }
+
+    #[test]
+    fn hostname_reaches_the_bootstrap_payload_but_not_the_eval_cache_key() {
+        let system = "aarch64-darwin";
+        let root = PathBuf::from("/home/user/project");
+        let dotfile = PathBuf::from("/home/user/project/.devenv");
+        let dotfile_path = PathBuf::from("./.devenv");
+        let tmpdir = PathBuf::from("/tmp");
+        let runtime = PathBuf::from("/tmp/runtime");
+        let profiles: Vec<String> = vec![];
+        let test_config = Config::default();
+
+        let on_lan = NixArgs {
+            version: "1.10.1",
+            is_development_version: false,
+            require_version_match: false,
+            system,
+            devenv_root: &root,
+            skip_local_src: false,
+            devenv_dotfile: &dotfile,
+            devenv_dotfile_path: &dotfile_path,
+            devenv_tmpdir: &tmpdir,
+            devenv_runtime: &runtime,
+            devenv_istesting: false,
+            devenv_direnvrc_latest_version: 5,
+            active_profiles: &profiles,
+            cli_options: CliOptionsConfig::default(),
+            hostname: Some("laptop.local"),
+            username: Some("testuser"),
+            git_root: None,
+            secretspec: None,
+            devenv_inputs: &test_config.inputs,
+            devenv_imports: &test_config.imports,
+            impure: false,
+            nixpkgs_config: test_config.nixpkgs_config(system),
+            lock_fingerprint: "abc123",
+            devenv_state: None,
+        };
+        let on_vpn = NixArgs {
+            hostname: Some("laptop.tailnet.ts.net"),
+            ..on_lan.clone()
+        };
+
+        let on_lan = on_lan.bootstrap_args().expect("serialize");
+        let on_vpn = on_vpn.bootstrap_args().expect("serialize");
+
+        assert!(on_lan.as_str().contains("laptop.local"));
+        assert!(on_vpn.as_str().contains("laptop.tailnet.ts.net"));
+        assert_eq!(
+            crate::evaluator::eval_cache_key_args(&on_lan, false, false),
+            crate::evaluator::eval_cache_key_args(&on_vpn, false, false),
+        );
     }
 }

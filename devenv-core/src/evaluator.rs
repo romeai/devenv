@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use miette::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::bootstrap_args::BootstrapArgs;
 use crate::store::{Store, StorePath};
 
 /// Options for [`Evaluator::build`].
@@ -50,11 +51,14 @@ pub type NixMetadata = String;
 /// CLI-side knobs that affect evaluation output but are not part of the
 /// Nix args themselves.
 pub fn eval_cache_key_args(
-    nix_args_str: &str,
+    bootstrap_args: &BootstrapArgs,
     port_allocation_enabled: bool,
     strict_ports: bool,
 ) -> String {
-    format!("{nix_args_str}:port_allocation={port_allocation_enabled}:strict_ports={strict_ports}")
+    format!(
+        "{}:port_allocation={port_allocation_enabled}:strict_ports={strict_ports}",
+        bootstrap_args.cache_key_seed()
+    )
 }
 
 /// "A thing that can talk to Nix."
@@ -90,7 +94,8 @@ mod tests {
 
     #[test]
     fn eval_cache_key_args_includes_port_flags() {
-        let key = eval_cache_key_args("{ foo = 1; }", true, false);
+        let args = BootstrapArgs::from_serializable(&"foo").unwrap();
+        let key = eval_cache_key_args(&args, true, false);
         assert!(key.contains("port_allocation=true"));
         assert!(key.contains("strict_ports=false"));
     }
