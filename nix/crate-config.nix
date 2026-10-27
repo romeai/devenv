@@ -129,11 +129,14 @@ let
       nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [ pkg-config ];
       OPENSSL_NO_VENDOR = "1";
     }
-    # Unset, openssl-sys falls back to probing Homebrew on darwin (the nix
-    # sandbox is off there) and links its dylibs into the static binary.
-    // lib.optionalAttrs (stdenv.hostPlatform.isStatic && stdenv.hostPlatform.isDarwin) {
+    # Unset, openssl-sys probes Homebrew before pkg-config on darwin (the nix
+    # sandbox is off there) and hands its lib dir to every crate linking
+    # openssl, e.g. devenv-proxy, which then fails or links Homebrew's dylibs.
+    // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
       OPENSSL_LIB_DIR = "${lib.getLib openssl}/lib";
       OPENSSL_INCLUDE_DIR = "${lib.getDev openssl}/include";
+    }
+    // lib.optionalAttrs (stdenv.hostPlatform.isStatic && stdenv.hostPlatform.isDarwin) {
       OPENSSL_STATIC = "1";
     };
 
